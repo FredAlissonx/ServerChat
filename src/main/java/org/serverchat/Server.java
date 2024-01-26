@@ -10,30 +10,41 @@ import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-public class Server implements Runnable {
+public class Server {
     private ArrayList<ConnectionHandler> connections;
     private ServerSocket server;
-    private boolean done;
+    private volatile boolean done;
     private ExecutorService pool;
 
-    public Server() {
-        connections = new ArrayList<>();
-        done = false;
+    public static void main(String[] args) {
+        new Server().start();
     }
 
-    @Override
-    public void run() {
+    public void start() {
         try {
-            server = new ServerSocket(9999);
-            pool = Executors.newCachedThreadPool();
-            while (!server.isClosed()) {
+            initializeServer();
+            startConnectionHandlers();
+        } catch (Exception e) {
+            shutDown();
+        }
+    }
+
+    private void initializeServer() throws IOException {
+        connections = new ArrayList<>();
+        server = new ServerSocket(9999);
+        pool = Executors.newCachedThreadPool();
+    }
+
+    private void startConnectionHandlers() {
+        while (!server.isClosed()) {
+            try {
                 Socket client = server.accept();
                 ConnectionHandler connectionHandler = new ConnectionHandler(client);
                 connections.add(connectionHandler);
                 pool.execute(connectionHandler);
+            } catch (IOException e) {
+                shutDown();
             }
-        } catch (Exception e) {
-            shutDown();
         }
     }
 
@@ -46,17 +57,19 @@ public class Server implements Runnable {
     }
 
     public void shutDown() {
+        done = true;
         try {
-            done = true;
-            pool.shutdown();
-            if (!server.isClosed()) {
-                server.close();
-            }
+            closeResources();
         } catch (IOException e) {
-            // ignore
+            // log or handle exception
         }
-        for (ConnectionHandler ch : connections) {
-            ch.shutDown();
+        connections.forEach(ConnectionHandler::shutDown);
+    }
+
+    private void closeResources() throws IOException {
+        pool.shutdown();
+        if (!server.isClosed()) {
+            server.close();
         }
     }
 
@@ -64,7 +77,7 @@ public class Server implements Runnable {
         private Socket client;
         private BufferedReader in;
         private PrintWriter out;
-        String nickName;
+        private String nickName;
 
         public ConnectionHandler(Socket client) {
             this.client = client;
@@ -73,35 +86,55 @@ public class Server implements Runnable {
         @Override
         public void run() {
             try {
-                out = new PrintWriter(client.getOutputStream(), true);
-                in = new BufferedReader(new InputStreamReader(client.getInputStream()));
-                out.println("Please enter a nickname: ");
-                nickName = in.readLine();
-                System.out.println(nickName + " connected!");
-                broadcast(nickName + " joined the chat!");
-                String message;
-                while ((message = in.readLine()) != null) {
-                    if (message.startsWith("/nick")) {
-                        String[] messageSplit = message.split(" ", 2);
-                        if (messageSplit.length == 2) {
-                            broadcast(nickName + " renamed themselves to " + messageSplit[1]);
-                            System.out.println(nickName + " renamed themselves to " + messageSplit[1]);
-                            nickName = messageSplit[1];
-                            out.println("Successfully changed nickname to " + nickName);
-                        } else {
-                            out.println("No nickname provided!");
-                        }
-                    } else if (message.startsWith("/quit")) {
-                        broadcast(nickName + " left the chat!");
-                        System.out.println(nickName + " left the chat!");
-                        shutDown();
-                    } else {
-                        broadcast(nickName + ": " + message);
-                    }
-                }
+                initializeStreams();
+                processClientInput();
             } catch (IOException e) {
                 shutDown();
             }
+        }
+
+        private void initializeStreams() throws IOException {
+            out = new PrintWriter(client.getOutputStream(), true);
+            in = new BufferedReader(new InputStreamReader(client.getInputStream()));
+            out.println("Please enter a nickname: ");
+            nickName = in.readLine();
+            System.out.println(nickName + " connected!");
+            broadcast(nickName + " joined the chat!");
+        }
+
+        private void processClientInput() throws IOException {
+            String message;
+            while ((message = in.readLine()) != null) {
+                processMessage(message);
+            }
+        }
+
+        private void processMessage(String message) {
+            if (message.startsWith("/nick")) {
+                handleNickCommand(message);
+            } else if (message.startsWith("/quit")) {
+                handleQuitCommand();
+            } else {
+                broadcast(nickName + ": " + message);
+            }
+        }
+
+        private void handleNickCommand(String message) {
+            String[] messageSplit = message.split(" ", 2);
+            if (messageSplit.length == 2) {
+                broadcast(nickName + " renamed themselves to " + messageSplit[1]);
+                System.out.println(nickName + " renamed themselves to " + messageSplit[1]);
+                nickName = messageSplit[1];
+                out.println("Successfully changed nickname to " + nickName);
+            } else {
+                out.println("No nickname provided!");
+            }
+        }
+
+        private void handleQuitCommand() {
+            broadcast(nickName + " left the chat!");
+            System.out.println(nickName + " left the chat!");
+            shutDown();
         }
 
         public void sendMessage(String message) {
@@ -110,19 +143,18 @@ public class Server implements Runnable {
 
         public void shutDown() {
             try {
-                in.close();
-                out.close();
-                if (!client.isClosed()) {
-                    client.close();
-                }
+                closeStreams();
             } catch (IOException e) {
-                // ignore
+                // log or handle exception
             }
         }
-    }
 
-    public static void main(String[] args) {
-        Server server = new Server();
-        server.run();
+        private void closeStreams() throws IOException {
+            in.close();
+            out.close();
+            if (!client.isClosed()) {
+                client.close();
+            }
+        }
     }
 }
